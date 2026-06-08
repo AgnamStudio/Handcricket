@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -146,8 +145,7 @@
                 const wickets = parseInt(document.getElementById('t_wickets').value) || 2;
                 const superShots = parseInt(document.getElementById('t_super_count').value) || 0;
                 const lifeCards = parseInt(document.getElementById('t_life_count').value) || 0;
-                const scheduleType = document.getElementById('t_schedule_type').value;
-                const totalRandomMatches = parseInt(document.getElementById('t_matches_count').value) || 10;
+                const rrMultiplier = parseInt(document.getElementById('t_schedule_type').value) || 1;
 
                 const settings = { balls, wickets, superShots, lifeCards };
 
@@ -155,25 +153,45 @@
                     id: utils.id(), name, settings, teams: [...app.tempTeams], matches: [], playoffsGenerated: false, winner: null
                 };
 
-                const teams = newTourney.teams;
-                let schedule = [];
+                // CIRCLE ALGORITHM FOR PERFECTLY SPACED ROUND-ROBIN SCHEDULING
+                let teamIds = newTourney.teams.map(t => t.id);
+                if (teamIds.length % 2 !== 0) teamIds.push(null); // Add dummy 'bye' team if odd
+
+                let numTeams = teamIds.length;
+                let rounds = numTeams - 1;
+                let half = numTeams / 2;
                 
-                // Fair Equal Matches Logic
-                if (scheduleType === 'single_rr' || scheduleType === 'double_rr') {
-                    let rounds = scheduleType === 'single_rr' ? 1 : 2;
-                    for (let r = 0; r < rounds; r++) {
-                        for (let i = 0; i < teams.length; i++) {
-                            for (let j = i + 1; j < teams.length; j++) {
-                                schedule.push(utils.createMatch('League', teams[i].id, teams[j].id, settings));
-                            }
+                let baseRounds = [];
+                let currentTeamIds = [...teamIds];
+
+                // Generate 1 full set of mathematically spaced rounds
+                for (let r = 0; r < rounds; r++) {
+                    let thisRound = [];
+                    for (let i = 0; i < half; i++) {
+                        let t1 = currentTeamIds[i];
+                        let t2 = currentTeamIds[numTeams - 1 - i];
+                        if (t1 !== null && t2 !== null) { // Ignore 'bye' matches
+                            thisRound.push({t1, t2});
                         }
                     }
-                } else if (scheduleType === 'random') {
-                    for (let i = 0; i < totalRandomMatches; i++) {
-                        let t1 = teams[Math.floor(Math.random() * teams.length)];
-                        let t2; do { t2 = teams[Math.floor(Math.random() * teams.length)]; } while (t1.id === t2.id);
-                        schedule.push(utils.createMatch('League', t1.id, t2.id, settings));
-                    }
+                    baseRounds.push(thisRound);
+                    // Rotate array for next round (keep first item fixed)
+                    currentTeamIds.splice(1, 0, currentTeamIds.pop());
+                }
+
+                let schedule = [];
+                // Multiply the rounds by user choice (x1 to x7)
+                for (let m = 0; m < rrMultiplier; m++) {
+                    baseRounds.forEach(round => {
+                        round.forEach(match => {
+                            // Alternate Home/Away on each cycle for ultimate fairness
+                            if (m % 2 === 1) {
+                                schedule.push(utils.createMatch('League', match.t2, match.t1, settings));
+                            } else {
+                                schedule.push(utils.createMatch('League', match.t1, match.t2, settings));
+                            }
+                        });
+                    });
                 }
                 
                 newTourney.matches = schedule;
@@ -181,8 +199,8 @@
                 
                 // Reset Temp Teams
                 app.tempTeams = [
-                    { id: utils.id(), name: 'Smashers', emoji: '🟣' }, { id: utils.id(), name: 'Warriors', emoji: '🔵' },
-                    { id: utils.id(), name: 'Titans', emoji: '🟡' }, { id: utils.id(), name: 'Knights', emoji: '🔴' }
+                    { id: utils.id(), name: 'Riders', emoji: '🟣' }, { id: utils.id(), name: 'Warriors', emoji: '🔵' },
+                    { id: utils.id(), name: 'Titans', emoji: '🟡' }, { id: utils.id(), name: 'Royals', emoji: '🔴' }
                 ];
                 app.navigate('hub', { tourneyId: newTourney.id });
             },
@@ -514,16 +532,17 @@
                             <label class="block text-xs text-slate-400 uppercase tracking-wider font-bold mb-1.5 ml-1">Tournament Name</label>
                             <input type="text" id="t_name" placeholder="E.g. Summer League" class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3.5 text-white outline-none focus:border-blue-500 transition mb-5 font-medium">
                             
-                            <label class="block text-xs text-slate-400 uppercase tracking-wider font-bold mb-1.5 ml-1">League Format</label>
-                            <select id="t_schedule_type" onchange="document.getElementById('t_matches_wrap').style.display = this.value === 'random' ? 'block' : 'none'" class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3.5 text-white outline-none focus:border-blue-500 mb-3 font-medium">
-                                <option value="single_rr">Single Round Robin (Play Once)</option>
-                                <option value="double_rr">Double Round Robin (Play Twice)</option>
-                                <option value="random">Custom (Randomly Paired)</option>
+                            <label class="block text-xs text-slate-400 uppercase tracking-wider font-bold mb-1.5 ml-1">League Format (Round Robin)</label>
+                            <select id="t_schedule_type" class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3.5 text-white outline-none focus:border-blue-500 mb-2 font-medium">
+                                <option value="1">Round Robin x1 (Play everyone once)</option>
+                                <option value="2">Round Robin x2 (Play everyone twice)</option>
+                                <option value="3">Round Robin x3 (Play 3 times)</option>
+                                <option value="4">Round Robin x4</option>
+                                <option value="5">Round Robin x5</option>
+                                <option value="6">Round Robin x6</option>
+                                <option value="7">Round Robin x7</option>
                             </select>
-                            <div id="t_matches_wrap" style="display: none;" class="mb-2">
-                                <label class="block text-xs text-slate-400 uppercase tracking-wider font-bold mb-1.5 ml-1">Total Random Matches</label>
-                                <input type="number" id="t_matches_count" value="10" min="1" max="50" class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-blue-500">
-                            </div>
+                            <p class="text-[10px] text-slate-500 ml-1 mt-1">*Matches are beautifully interleaved to avoid back-to-back games.</p>
                         </div>
 
                         <div class="bg-slate-900 p-4 rounded-2xl border border-slate-800 shadow-sm">
@@ -550,7 +569,7 @@
                                 </div>
                             </div>
 
-                            <h3 class="text-sm text-white font-bold mb-4 border-t border-slate-800 pt-4">Powerups (Per Team)</h3>
+                            <h3 class="text-sm text-white font-bold mb-4 border-t border-slate-800 pt-4">Powerups (Per Match)</h3>
                             <div class="grid grid-cols-2 gap-4">
                                 <div>
                                     <label class="block text-[11px] text-slate-400 uppercase tracking-wider font-bold mb-1 ml-1">🔥 Super Shots</label>
@@ -837,8 +856,7 @@
             const t = state.tournaments.find(x => x.id === state.activeTourneyId);
             const m = t.matches.find(x => x.id === state.activeMatchId);
             
-            // Failsafe rendering if accidentally called
-            if(m.status === 'completed') return `<div class="flex h-full items-center justify-center bg-slate-950 text-slate-400 animate-pulse font-bold">Loading...</div>`;
+            if(m.status === 'completed') return `<div class="flex h-full items-center justify-center bg-slate-950 text-slate-400 animate-pulse font-bold">Loading Scorecard...</div>`;
 
             const t1 = t.teams.find(x => x.id === m.team1);
             const t2 = t.teams.find(x => x.id === m.team2);
@@ -1184,6 +1202,4 @@
     </script>
 </body>
 </html>
-
-
 
