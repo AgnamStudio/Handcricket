@@ -1,0 +1,1189 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>HCPL Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=Teko:wght@500;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #020617; /* Very dark slate */
+            color: #f8fafc;
+            -webkit-tap-highlight-color: transparent;
+            overscroll-behavior-y: none;
+            user-select: none; /* Prevent accidental text selection while tapping */
+        }
+
+        .font-display { font-family: 'Teko', sans-serif; }
+
+        /* Hide Scrollbar */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        /* Animations */
+        .fade-in { animation: fadeIn 0.3s ease-in-out; }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .pulse-text { animation: pulse 1.5s infinite; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .coin-flip { animation: flip 1.2s ease-out forwards; }
+        @keyframes flip {
+            0% { transform: rotateY(0deg) scale(1); }
+            50% { transform: rotateY(720deg) scale(1.5); }
+            100% { transform: rotateY(1440deg) scale(1); }
+        }
+        
+        button:active { transform: scale(0.96); }
+        button:disabled { transform: scale(1); opacity: 0.5; cursor: not-allowed; }
+        .match-btn { transition: all 0.1s; }
+        .commentary-scroll { scroll-behavior: smooth; }
+        .glow-text { text-shadow: 0 0 15px rgba(250, 204, 21, 0.6); }
+    </style>
+</head>
+<body class="flex justify-center items-center min-h-screen">
+
+    <!-- Mobile App Container -->
+    <div id="app" class="w-full max-w-md bg-slate-900 h-screen sm:h-[95vh] sm:rounded-3xl shadow-2xl relative overflow-hidden flex flex-col border border-slate-800">
+        <!-- Rendered Content Appears Here -->
+    </div>
+
+    <script>
+        // --- DATA & STATE MANAGEMENT ---
+        const STORAGE_KEY = 'hcpl_app_data_v_final';
+
+        const defaultState = {
+            view: 'home', 
+            activeTourneyId: null,
+            activeMatchId: null,
+            tournaments: []
+        };
+
+        let state = JSON.parse(localStorage.getItem(STORAGE_KEY)) || defaultState;
+
+        function saveState() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        }
+
+        const utils = {
+            id: () => Math.random().toString(36).substr(2, 9),
+            formatOvers: (balls) => `${Math.floor(balls / 6)}.${balls % 6}`,
+            randomComment: (type) => {
+                const comments = {
+                    6: ["Massive hit! Out of the park! 🔥", "Six runs! Beautiful timing.", "What a shot! It's huge! 🚀", "Clean strike into the stands!"],
+                    4: ["Cracking shot for four!", "Finds the gap, four runs.", "Boundary! Excellent placement. ✨", "Pierces the infield for 4!"],
+                    3: ["Great running between the wickets.", "Three runs taken. Excellent hustle."],
+                    2: ["Pushes for two.", "Good running, gets two comfortably."],
+                    1: ["Just a single.", "Taps and runs.", "Quick single taken.", "Rotates the strike."],
+                    0: ["Dot ball. Good bowling.", "No run.", "Defended well. 🛡️", "Beaten! Great delivery."],
+                    'W': ["WICKET! He has to go! ❌", "Bowled him! What a delivery!", "Caught! Huge moment! 😱", "Stumped! Brilliant work!"]
+                };
+                let opts = comments[type] || comments[0];
+                return opts[Math.floor(Math.random() * opts.length)];
+            },
+            createMatch: (stage, t1Id, t2Id, tourneySettings) => ({
+                id: utils.id(), stage: stage,
+                team1: t1Id, team2: t2Id,
+                status: 'pending', inn: 1,
+                t1Score: 0, t1Wickets: 0, t1Balls: 0,
+                t2Score: 0, t2Wickets: 0, t2Balls: 0,
+                t1Sixes: 0, t1Fours: 0, t2Sixes: 0, t2Fours: 0,
+                t1Super: tourneySettings.superShots, t1Life: tourneySettings.lifeCards,
+                t2Super: tourneySettings.superShots, t2Life: tourneySettings.lifeCards,
+                pendingWicket: false, 
+                winnerId: null, logs: [],
+                tossDone: false, tossWinnerId: null, tossChoice: null,
+                // Super Over State
+                isSuperOver: false, soInn: 1,
+                soT1Score: 0, soT1Wickets: 0, soT1Balls: 0,
+                soT2Score: 0, soT2Wickets: 0, soT2Balls: 0
+            })
+        };
+
+        // --- GLOBAL APP LOGIC ---
+        window.app = {
+            navigate: (view, params = {}) => {
+                state.view = view;
+                if (params.tourneyId) state.activeTourneyId = params.tourneyId;
+                if (params.matchId) state.activeMatchId = params.matchId;
+                saveState();
+                render();
+            },
+            
+            // 1. TOURNAMENT CREATION
+            tempTeams: [
+                { id: utils.id(), name: 'Smashers', emoji: '🟣' },
+                { id: utils.id(), name: 'Warriors', emoji: '🔵' },
+                { id: utils.id(), name: 'Titans', emoji: '🟡' },
+                { id: utils.id(), name: 'Knights', emoji: '🔴' }
+            ],
+            
+            addTempTeam: () => {
+                if(app.tempTeams.length >= 8) return alert("Max 8 teams allowed.");
+                app.tempTeams.push({ id: utils.id(), name: `Team ${app.tempTeams.length + 1}`, emoji: '🏏' });
+                render();
+            },
+            updateTempTeam: (index, field, value) => { app.tempTeams[index][field] = value; },
+            removeTempTeam: (index) => {
+                if(app.tempTeams.length <= 4) return alert("Min 4 teams required for Playoffs.");
+                app.tempTeams.splice(index, 1);
+                render();
+            },
+            createTournament: () => {
+                const name = document.getElementById('t_name').value || 'New Season';
+                const balls = parseInt(document.getElementById('t_balls').value) || 12;
+                const wickets = parseInt(document.getElementById('t_wickets').value) || 2;
+                const superShots = parseInt(document.getElementById('t_super_count').value) || 0;
+                const lifeCards = parseInt(document.getElementById('t_life_count').value) || 0;
+                const scheduleType = document.getElementById('t_schedule_type').value;
+                const totalRandomMatches = parseInt(document.getElementById('t_matches_count').value) || 10;
+
+                const settings = { balls, wickets, superShots, lifeCards };
+
+                const newTourney = {
+                    id: utils.id(), name, settings, teams: [...app.tempTeams], matches: [], playoffsGenerated: false, winner: null
+                };
+
+                const teams = newTourney.teams;
+                let schedule = [];
+                
+                // Fair Equal Matches Logic
+                if (scheduleType === 'single_rr' || scheduleType === 'double_rr') {
+                    let rounds = scheduleType === 'single_rr' ? 1 : 2;
+                    for (let r = 0; r < rounds; r++) {
+                        for (let i = 0; i < teams.length; i++) {
+                            for (let j = i + 1; j < teams.length; j++) {
+                                schedule.push(utils.createMatch('League', teams[i].id, teams[j].id, settings));
+                            }
+                        }
+                    }
+                } else if (scheduleType === 'random') {
+                    for (let i = 0; i < totalRandomMatches; i++) {
+                        let t1 = teams[Math.floor(Math.random() * teams.length)];
+                        let t2; do { t2 = teams[Math.floor(Math.random() * teams.length)]; } while (t1.id === t2.id);
+                        schedule.push(utils.createMatch('League', t1.id, t2.id, settings));
+                    }
+                }
+                
+                newTourney.matches = schedule;
+                state.tournaments.push(newTourney);
+                
+                // Reset Temp Teams
+                app.tempTeams = [
+                    { id: utils.id(), name: 'Smashers', emoji: '🟣' }, { id: utils.id(), name: 'Warriors', emoji: '🔵' },
+                    { id: utils.id(), name: 'Titans', emoji: '🟡' }, { id: utils.id(), name: 'Knights', emoji: '🔴' }
+                ];
+                app.navigate('hub', { tourneyId: newTourney.id });
+            },
+
+            // 2. TOSS SYSTEM
+            tossState: null,
+            tossWinnerIdx: null,
+            doToss: () => {
+                app.tossState = 'flipping'; render();
+                setTimeout(() => { app.tossWinnerIdx = Math.random() < 0.5 ? 1 : 2; app.tossState = 'result'; render(); }, 1200);
+            },
+            completeToss: (choice) => {
+                const t = state.tournaments.find(x => x.id === state.activeTourneyId);
+                const m = t.matches.find(x => x.id === state.activeMatchId);
+                
+                let winnerId = app.tossWinnerIdx === 1 ? m.team1 : m.team2;
+                m.tossWinnerId = winnerId; m.tossChoice = choice; m.tossDone = true;
+
+                // Restructure so Team1 is ALWAYS batting first
+                let team1BatsFirst = true;
+                if (winnerId === m.team1 && choice === 'bowl') team1BatsFirst = false;
+                if (winnerId === m.team2 && choice === 'bat') team1BatsFirst = false;
+
+                if (!team1BatsFirst) {
+                    let temp = m.team1; m.team1 = m.team2; m.team2 = temp;
+                    let tempS = m.t1Super; m.t1Super = m.t2Super; m.t2Super = tempS;
+                    let tempL = m.t1Life; m.t1Life = m.t2Life; m.t2Life = tempL;
+                }
+
+                let winnerTeam = t.teams.find(x => x.id === winnerId);
+                m.logs.unshift(`🪙 Toss: ${winnerTeam.name} won and chose to ${choice} first.`);
+                
+                app.tossState = null; app.tossWinnerIdx = null;
+                app.navigate('match');
+            },
+
+            // 3. MATCH ENGINE
+            activeSuperShot: false,
+            toggleSuperShot: () => { app.activeSuperShot = !app.activeSuperShot; render(); },
+
+            playBall: (run, isOut = false) => {
+                const t = state.tournaments.find(x => x.id === state.activeTourneyId);
+                const m = t.matches.find(x => x.id === state.activeMatchId);
+                
+                if (m.status === 'completed' || m.pendingWicket) return;
+                if (m.status === 'pending') m.status = 'active';
+
+                let isT1Batting = m.isSuperOver ? (m.soInn === 1) : (m.inn === 1);
+                let actualRun = run;
+
+                if (isOut) {
+                    if (app.activeSuperShot) {
+                        // CATASTROPHE MECHANIC
+                        if (isT1Batting) {
+                            if (m.isSuperOver) { m.soT1Wickets = 2; m.soT1Balls++; }
+                            else { m.t1Wickets = t.settings.wickets; m.t1Balls++; }
+                            m.t1Life = 0; m.t1Super--;
+                        } else {
+                            if (m.isSuperOver) { m.soT2Wickets = 2; m.soT2Balls++; }
+                            else { m.t2Wickets = t.settings.wickets; m.t2Balls++; }
+                            m.t2Life = 0; m.t2Super--;
+                        }
+                        
+                        let currentBalls = isT1Batting ? (m.isSuperOver ? m.soT1Balls : m.t1Balls) : (m.isSuperOver ? m.soT2Balls : m.t2Balls);
+                        m.logs.unshift(`Ball ${utils.formatOvers(currentBalls)}: 😱 CATASTROPHE! Caught on a Super Shot! ALL wickets lost! Innings over!`);
+                        app.activeSuperShot = false;
+                        app.checkMatchState(t, m);
+                    } else {
+                        // TRIGGER POST-WICKET LIFE CARD DECISION
+                        m.pendingWicket = true; 
+                    }
+                    saveState();
+                    if (m.status === 'completed') app.navigate('scorecard'); else render();
+                    return;
+                }
+
+                // Normal Runs & Super Shot Success
+                if (app.activeSuperShot) {
+                    actualRun *= 2;
+                    isT1Batting ? m.t1Super-- : m.t2Super--;
+                    let currentBalls = isT1Batting ? (m.isSuperOver ? m.soT1Balls+1 : m.t1Balls+1) : (m.isSuperOver ? m.soT2Balls+1 : m.t2Balls+1);
+                    m.logs.unshift(`Ball ${utils.formatOvers(currentBalls)}: 🔥 SUPER SHOT! ${actualRun} Runs!`);
+                    app.activeSuperShot = false;
+                } else {
+                    let currentBalls = isT1Batting ? (m.isSuperOver ? m.soT1Balls+1 : m.t1Balls+1) : (m.isSuperOver ? m.soT2Balls+1 : m.t2Balls+1);
+                    m.logs.unshift(`Ball ${utils.formatOvers(currentBalls)}: ${actualRun} Runs! ${utils.randomComment(run)}`);
+                }
+
+                // Stats (Ignored in Super Overs)
+                if (!m.isSuperOver) {
+                    if (actualRun === 6) isT1Batting ? m.t1Sixes++ : m.t2Sixes++;
+                    if (actualRun === 4) isT1Batting ? m.t1Fours++ : m.t2Fours++;
+                }
+
+                if (m.isSuperOver) {
+                    isT1Batting ? m.soT1Score += actualRun : m.soT2Score += actualRun;
+                    isT1Batting ? m.soT1Balls++ : m.soT2Balls++;
+                } else {
+                    isT1Batting ? m.t1Score += actualRun : m.t2Score += actualRun;
+                    isT1Batting ? m.t1Balls++ : m.t2Balls++;
+                }
+
+                app.checkMatchState(t, m);
+                saveState();
+                if (m.status === 'completed') app.navigate('scorecard'); else render();
+            },
+
+            handleWicketDecision: (useLifeCard) => {
+                const t = state.tournaments.find(x => x.id === state.activeTourneyId);
+                const m = t.matches.find(x => x.id === state.activeMatchId);
+                let isT1Batting = m.isSuperOver ? (m.soInn === 1) : (m.inn === 1);
+
+                m.pendingWicket = false; 
+
+                if (useLifeCard) {
+                    isT1Batting ? m.t1Life-- : m.t2Life--;
+                    if (m.isSuperOver) isT1Batting ? m.soT1Balls++ : m.soT2Balls++; else isT1Batting ? m.t1Balls++ : m.t2Balls++;
+                    
+                    let currentBalls = isT1Batting ? (m.isSuperOver ? m.soT1Balls : m.t1Balls) : (m.isSuperOver ? m.soT2Balls : m.t2Balls);
+                    m.logs.unshift(`Ball ${utils.formatOvers(currentBalls)}: 🛡️ LIFE CARD USED! Wicket cancelled!`);
+                } else {
+                    if (m.isSuperOver) {
+                        isT1Batting ? m.soT1Wickets++ : m.soT2Wickets++;
+                        isT1Batting ? m.soT1Balls++ : m.soT2Balls++;
+                    } else {
+                        isT1Batting ? m.t1Wickets++ : m.t2Wickets++;
+                        isT1Batting ? m.t1Balls++ : m.t2Balls++;
+                    }
+                    let currentBalls = isT1Batting ? (m.isSuperOver ? m.soT1Balls : m.t1Balls) : (m.isSuperOver ? m.soT2Balls : m.t2Balls);
+                    m.logs.unshift(`Ball ${utils.formatOvers(currentBalls)}: ${utils.randomComment('W')}`);
+                }
+
+                app.checkMatchState(t, m);
+                saveState();
+                if (m.status === 'completed') app.navigate('scorecard'); else render();
+            },
+
+            checkMatchState: (t, m) => {
+                if (m.pendingWicket) return;
+
+                if (!m.isSuperOver) {
+                    let maxB = t.settings.balls; let maxW = t.settings.wickets;
+
+                    if (m.inn === 1 && (m.t1Balls >= maxB || m.t1Wickets >= maxW)) {
+                        m.inn = 2; app.activeSuperShot = false; m.logs.unshift("--- INNINGS BREAK ---");
+                    } else if (m.inn === 2) {
+                        let target = m.t1Score + 1;
+                        if (m.t2Score >= target || m.t2Balls >= maxB || m.t2Wickets >= maxW) {
+                            if (m.t2Score === m.t1Score) {
+                                m.isSuperOver = true; m.soInn = 1; app.activeSuperShot = false;
+                                m.logs.unshift("⚔️ MATCH TIED! SUPER OVER STARTING! ⚔️");
+                            } else {
+                                m.status = 'completed'; m.logs.unshift("--- MATCH OVER ---");
+                                m.winnerId = m.t2Score > m.t1Score ? m.team2 : m.team1;
+                                if (m.stage === 'Final') t.winner = m.winnerId;
+                            }
+                        }
+                    }
+                } else {
+                    let maxSOBalls = 6; let maxSOWickets = 2;
+
+                    if (m.soInn === 1 && (m.soT1Balls >= maxSOBalls || m.soT1Wickets >= maxSOWickets)) {
+                        m.soInn = 2; app.activeSuperShot = false; m.logs.unshift("--- SUPER OVER: INNINGS BREAK ---");
+                    } else if (m.soInn === 2) {
+                        let target = m.soT1Score + 1;
+                        if (m.soT2Score >= target || m.soT2Balls >= maxSOBalls || m.soT2Wickets >= maxSOWickets) {
+                            if (m.soT2Score === m.soT1Score) {
+                                m.soInn = 1; app.activeSuperShot = false;
+                                m.soT1Score = 0; m.soT1Wickets = 0; m.soT1Balls = 0; m.soT2Score = 0; m.soT2Wickets = 0; m.soT2Balls = 0;
+                                m.logs.unshift("😱 SUPER OVER TIED! ANOTHER SUPER OVER STARTING! 😱");
+                            } else {
+                                m.status = 'completed'; m.logs.unshift("--- SUPER OVER COMPLETED ---");
+                                m.winnerId = m.soT2Score > m.soT1Score ? m.team2 : m.team1;
+                                if (m.stage === 'Final') t.winner = m.winnerId;
+                            }
+                        }
+                    }
+                }
+            },
+
+            // 4. TOURNAMENT ENGINE
+            generatePlayoffs: () => {
+                const t = state.tournaments.find(x => x.id === state.activeTourneyId);
+                const table = app.getPointsTable(t);
+                if (table.length < 4) return alert("Need 4 teams for playoffs.");
+
+                t.matches.push(utils.createMatch('Qualifier 1', table[0].id, table[1].id, t.settings));
+                t.matches.push(utils.createMatch('Eliminator', table[2].id, table[3].id, t.settings));
+                t.playoffsGenerated = true; saveState(); render();
+            },
+
+            checkPlayoffProgression: (t) => {
+                if(!t.playoffsGenerated) return;
+                let q1 = t.matches.find(m => m.stage === 'Qualifier 1'); let elim = t.matches.find(m => m.stage === 'Eliminator');
+                let q2 = t.matches.find(m => m.stage === 'Qualifier 2'); let final = t.matches.find(m => m.stage === 'Final');
+
+                if (q1?.status === 'completed' && elim?.status === 'completed' && !q2) {
+                    let loserQ1 = q1.winnerId === q1.team1 ? q1.team2 : q1.team1;
+                    t.matches.push(utils.createMatch('Qualifier 2', loserQ1, elim.winnerId, t.settings));
+                }
+                if (q1?.status === 'completed' && q2?.status === 'completed' && !final) {
+                    t.matches.push(utils.createMatch('Final', q1.winnerId, q2.winnerId, t.settings));
+                }
+            },
+
+            getPointsTable: (t) => {
+                let p = {}; t.teams.forEach(team => { p[team.id] = { ...team, m: 0, w: 0, l: 0, tie: 0, pts: 0, runsFor: 0, ballsFor: 0, runsAgainst: 0, ballsAgainst: 0, nrr: 0 }; });
+
+                t.matches.filter(m => m.status === 'completed' && m.stage === 'League').forEach(m => {
+                    let t1 = p[m.team1]; let t2 = p[m.team2]; if(!t1 || !t2) return;
+                    t1.m++; t2.m++;
+                    
+                    if (m.winnerId === m.team1) { t1.w++; t1.pts += 2; t2.l++; }
+                    else if (m.winnerId === m.team2) { t2.w++; t2.pts += 2; t1.l++; }
+                    else { t1.tie++; t2.tie++; t1.pts++; t2.pts++; } // Edge case fallback
+
+                    let maxBalls = t.settings.balls;
+                    let t1OversFaced = (m.t1Wickets >= t.settings.wickets) ? (maxBalls / 6) : (m.t1Balls / 6);
+                    let t2OversFaced = (m.t2Wickets >= t.settings.wickets) ? (maxBalls / 6) : (m.t2Balls / 6);
+
+                    t1.runsFor += m.t1Score; t1.ballsFor += t1OversFaced; t1.runsAgainst += m.t2Score; t1.ballsAgainst += t2OversFaced;
+                    t2.runsFor += m.t2Score; t2.ballsFor += t2OversFaced; t2.runsAgainst += m.t1Score; t2.ballsAgainst += t1OversFaced;
+                });
+
+                let table = Object.values(p).map(team => {
+                    let rf = team.runsFor; let of = team.ballsFor || 1;
+                    let ra = team.runsAgainst; let oa = team.ballsAgainst || 1;
+                    team.nrr = (team.m === 0) ? 0 : ((rf / of) - (ra / oa));
+                    return team;
+                });
+
+                table.sort((a, b) => b.pts - a.pts || b.nrr - a.nrr);
+                return table;
+            },
+
+            getTournamentStats: (t) => {
+                let stats = {};
+                t.teams.forEach(team => { stats[team.id] = { ...team, runs: 0, wickets: 0, sixes: 0, fours: 0, mvpPts: 0, matches: 0 }; });
+
+                let highestScore = { score: 0, team: null }; let highestChase = { score: 0, team: null }; let lowestDefend = { score: 9999, team: null };
+
+                t.matches.filter(m => m.status === 'completed').forEach(m => {
+                    if (!stats[m.team1] || !stats[m.team2]) return;
+                    stats[m.team1].matches++; stats[m.team2].matches++;
+
+                    stats[m.team1].runs += m.t1Score; stats[m.team1].wickets += m.t2Wickets; stats[m.team1].sixes += m.t1Sixes; stats[m.team1].fours += m.t1Fours;
+                    stats[m.team2].runs += m.t2Score; stats[m.team2].wickets += m.t1Wickets; stats[m.team2].sixes += m.t2Sixes; stats[m.team2].fours += m.t2Fours;
+
+                    if (m.t1Score > highestScore.score) highestScore = { score: m.t1Score, team: stats[m.team1] };
+                    if (m.t2Score > highestScore.score) highestScore = { score: m.t2Score, team: stats[m.team2] };
+
+                    if (m.winnerId === m.team2 && m.t2Score > highestChase.score) highestChase = { score: m.t2Score, team: stats[m.team2] };
+                    if (m.winnerId === m.team1 && m.t1Score < lowestDefend.score) lowestDefend = { score: m.t1Score, team: stats[m.team1] };
+                });
+
+                Object.values(stats).forEach(s => { s.mvpPts = s.runs + (s.wickets * 10) + (s.sixes * 2) + s.fours; });
+
+                let sArr = Object.values(stats);
+                return {
+                    tableStats: sArr,
+                    orangeCap: [...sArr].sort((a,b) => b.runs - a.runs)[0],
+                    purpleCap: [...sArr].sort((a,b) => b.wickets - a.wickets)[0],
+                    mostSixes: [...sArr].sort((a,b) => b.sixes - a.sixes)[0],
+                    mostFours: [...sArr].sort((a,b) => b.fours - a.fours)[0],
+                    mvp: [...sArr].sort((a,b) => b.mvpPts - a.mvpPts)[0],
+                    highestScore, highestChase, lowestDefend
+                };
+            },
+
+            hubTab: 'schedule',
+            setHubTab: (tab) => { app.hubTab = tab; render(); },
+            deleteTournament: (id) => { if(confirm("Delete this season?")) { state.tournaments = state.tournaments.filter(t => t.id !== id); app.navigate('home'); } }
+        };
+
+        // --- UI RENDER COMPONENTS ---
+        const TopBar = (title, backView = null, backParams = {}) => `
+            <div class="h-14 bg-slate-900 flex items-center px-4 shadow-md shrink-0 border-b border-slate-800 z-10">
+                ${backView ? `<button onclick="app.navigate('${backView}', ${JSON.stringify(backParams).replace(/"/g, "'")})" class="p-2 -ml-2 text-blue-400 hover:text-blue-300 transition active:scale-90"><i data-lucide="arrow-left"></i></button>` : ''}
+                <h1 class="text-xl font-bold ml-2 tracking-wide font-display text-white uppercase">${title}</h1>
+            </div>
+        `;
+
+        function renderHome() {
+            return `
+                ${TopBar("HCPL Manager")}
+                <div class="flex-1 overflow-y-auto p-4 space-y-6 fade-in no-scrollbar">
+                    <div class="bg-gradient-to-br from-blue-700 to-indigo-900 rounded-2xl p-6 text-center shadow-lg relative overflow-hidden">
+                        <i data-lucide="trophy" class="absolute -right-4 -bottom-4 w-32 h-32 text-white opacity-10"></i>
+                        <h2 class="text-3xl font-bold font-display tracking-widest text-white drop-shadow-md mb-2">HAND CRICKET</h2>
+                        <p class="text-blue-200 text-sm mb-6 font-medium">The Ultimate Pro Experience</p>
+                        <button onclick="app.navigate('create')" class="w-full bg-white text-blue-800 font-bold py-3.5 rounded-xl shadow-lg hover:bg-slate-100 flex justify-center items-center gap-2 transition active:scale-95">
+                            <i data-lucide="plus-circle" class="w-5 h-5"></i> Create New Season
+                        </button>
+                    </div>
+
+                    <div>
+                        <h3 class="text-slate-400 font-bold mb-3 text-xs uppercase tracking-wider pl-1">Your Seasons</h3>
+                        <div class="space-y-3">
+                            ${state.tournaments.length === 0 ? `
+                                <div class="text-center py-10 text-slate-500 bg-slate-800/30 rounded-2xl border border-slate-800 border-dashed">
+                                    <i data-lucide="inbox" class="w-8 h-8 mx-auto mb-2 opacity-50"></i>
+                                    <p class="text-sm">No tournaments yet.</p>
+                                </div>
+                            ` : state.tournaments.map(t => `
+                                <div onclick="app.navigate('hub', {tourneyId: '${t.id}'})" class="bg-slate-800 rounded-2xl p-4 border border-slate-700 hover:border-blue-500/50 cursor-pointer transition flex justify-between items-center group relative overflow-hidden shadow-sm">
+                                    ${t.winner ? `<div class="absolute top-0 right-0 bg-yellow-500 text-[9px] font-bold text-yellow-900 px-3 py-0.5 rounded-bl-lg uppercase tracking-widest shadow-sm">Completed</div>` : ''}
+                                    <div>
+                                        <h4 class="font-bold text-lg text-white group-hover:text-blue-400 transition">${t.name}</h4>
+                                        <p class="text-xs text-slate-400 mt-1">${t.teams.length} Teams • ${t.matches.length} Matches</p>
+                                    </div>
+                                    <div class="text-slate-400 group-hover:text-blue-400 transition transform group-hover:translate-x-1">
+                                        <i data-lucide="chevron-right"></i>
+                                    </div>
+                                </div>
+                            `).reverse().join('')}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderCreate() {
+            return `
+                ${TopBar("New Season", 'home')}
+                <div class="flex-1 overflow-y-auto p-4 fade-in no-scrollbar bg-slate-950">
+                    <div class="space-y-5">
+                        
+                        <div class="bg-slate-900 p-4 rounded-2xl border border-slate-800 shadow-sm">
+                            <label class="block text-xs text-slate-400 uppercase tracking-wider font-bold mb-1.5 ml-1">Tournament Name</label>
+                            <input type="text" id="t_name" placeholder="E.g. Summer League" class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3.5 text-white outline-none focus:border-blue-500 transition mb-5 font-medium">
+                            
+                            <label class="block text-xs text-slate-400 uppercase tracking-wider font-bold mb-1.5 ml-1">League Format</label>
+                            <select id="t_schedule_type" onchange="document.getElementById('t_matches_wrap').style.display = this.value === 'random' ? 'block' : 'none'" class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3.5 text-white outline-none focus:border-blue-500 mb-3 font-medium">
+                                <option value="single_rr">Single Round Robin (Play Once)</option>
+                                <option value="double_rr">Double Round Robin (Play Twice)</option>
+                                <option value="random">Custom (Randomly Paired)</option>
+                            </select>
+                            <div id="t_matches_wrap" style="display: none;" class="mb-2">
+                                <label class="block text-xs text-slate-400 uppercase tracking-wider font-bold mb-1.5 ml-1">Total Random Matches</label>
+                                <input type="number" id="t_matches_count" value="10" min="1" max="50" class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-blue-500">
+                            </div>
+                        </div>
+
+                        <div class="bg-slate-900 p-4 rounded-2xl border border-slate-800 shadow-sm">
+                            <h3 class="text-sm text-white font-bold mb-4">Match Rules</h3>
+                            <div class="grid grid-cols-2 gap-4 mb-5">
+                                <div>
+                                    <label class="block text-xs text-slate-400 uppercase tracking-wider font-bold mb-1.5 ml-1">Balls/Inn</label>
+                                    <select id="t_balls" class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-blue-500">
+                                        <option value="6">6 (1 Ov)</option>
+                                        <option value="12" selected>12 (2 Ov)</option>
+                                        <option value="18">18 (3 Ov)</option>
+                                        <option value="30">30 (5 Ov)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-slate-400 uppercase tracking-wider font-bold mb-1.5 ml-1">Wickets</label>
+                                    <select id="t_wickets" class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-blue-500">
+                                        <option value="1">1 Wicket</option>
+                                        <option value="2" selected>2 Wickets</option>
+                                        <option value="3">3 Wickets</option>
+                                        <option value="5">5 Wickets</option>
+                                        <option value="10">10 Wickets</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <h3 class="text-sm text-white font-bold mb-4 border-t border-slate-800 pt-4">Powerups (Per Team)</h3>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-[11px] text-slate-400 uppercase tracking-wider font-bold mb-1 ml-1">🔥 Super Shots</label>
+                                    <input type="number" id="t_super_count" value="1" min="0" max="10" class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-blue-500">
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] text-slate-400 uppercase tracking-wider font-bold mb-1 ml-1">🛡️ Life Cards</label>
+                                    <input type="number" id="t_life_count" value="1" min="0" max="10" class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-blue-500">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="bg-slate-900 p-4 rounded-2xl border border-slate-800 shadow-sm">
+                            <div class="flex justify-between items-center mb-4">
+                                <h3 class="text-sm text-white font-bold">Teams (${app.tempTeams.length}/8)</h3>
+                                <button onclick="app.addTempTeam()" class="text-blue-400 text-xs font-bold bg-blue-500/10 px-3 py-1.5 rounded-lg hover:bg-blue-500/20 transition">+ ADD TEAM</button>
+                            </div>
+                            <div class="space-y-2">
+                                ${app.tempTeams.map((team, idx) => `
+                                    <div class="flex gap-2 items-center bg-slate-950 p-2 rounded-xl border border-slate-800">
+                                        <input type="text" value="${team.emoji}" onchange="app.updateTempTeam(${idx}, 'emoji', this.value)" class="w-12 text-center bg-slate-800 rounded-lg p-2.5 outline-none focus:border-blue-500 border border-transparent">
+                                        <input type="text" value="${team.name}" onchange="app.updateTempTeam(${idx}, 'name', this.value)" class="flex-1 bg-slate-800 rounded-lg p-2.5 outline-none focus:border-blue-500 border border-transparent text-sm font-medium text-white">
+                                        <button onclick="app.removeTempTeam(${idx})" class="p-2.5 text-slate-500 hover:text-red-400 transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+
+                    </div>
+                    <div class="pt-6 pb-6">
+                        <button onclick="app.createTournament()" class="w-full bg-blue-600 text-white font-bold py-4 rounded-xl shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:bg-blue-500 transition active:scale-95 text-lg tracking-wide">
+                            Start Tournament
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderHub() {
+            const t = state.tournaments.find(x => x.id === state.activeTourneyId);
+            if(!t) return renderHome();
+            app.checkPlayoffProgression(t);
+
+            const getTeam = (id) => t.teams.find(x => x.id === id);
+            let content = '';
+
+            if (app.hubTab === 'schedule') {
+                let leagueCompleted = t.matches.filter(m => m.stage === 'League').every(m => m.status === 'completed');
+
+                content = `<div class="space-y-3 pb-6 fade-in">`;
+                
+                if(t.winner) {
+                    content += `
+                        <button onclick="app.navigate('awards')" class="w-full bg-gradient-to-r from-yellow-600 to-amber-600 p-5 rounded-2xl text-center shadow-lg border border-yellow-500/50 mb-4 relative overflow-hidden transition active:scale-95 group">
+                            <i data-lucide="award" class="w-20 h-20 mx-auto text-white/10 absolute -top-4 -right-2 transform group-hover:scale-110 transition duration-500"></i>
+                            <h2 class="text-yellow-100 text-xs font-black uppercase tracking-widest mb-1.5 drop-shadow-md">Season Completed</h2>
+                            <div class="text-2xl font-display font-bold text-white flex justify-center items-center gap-2 drop-shadow-md">
+                                🏆 VIEW AWARDS
+                            </div>
+                        </button>
+                    `;
+                }
+
+                t.matches.forEach(m => {
+                    let t1 = getTeam(m.team1); let t2 = getTeam(m.team2);
+                    let isPlayoff = m.stage !== 'League';
+                    let isTossDone = m.tossDone || m.status === 'active' || m.status === 'completed';
+
+                    let actionFn = (!isTossDone && m.status === 'pending') 
+                        ? `app.navigate('toss', {matchId: '${m.id}'})` 
+                        : `app.navigate('match', {matchId: '${m.id}'})`;
+                    
+                    let btnText = m.status === 'active' ? 'Resume Match' : (!isTossDone ? 'Toss & Play' : 'Play Match');
+                    
+                    let winnerText = 'Match Tied';
+                    if (m.winnerId && m.winnerId !== 'tie') {
+                        winnerText = m.isSuperOver ? `${getTeam(m.winnerId).name} won by Super Over` : `${getTeam(m.winnerId).name} won`;
+                    }
+
+                    content += `
+                        <div class="bg-slate-900 rounded-2xl p-4 border ${isPlayoff ? 'border-amber-500/40 bg-slate-900/90 shadow-[0_0_15px_rgba(245,158,11,0.05)]' : 'border-slate-800'} relative overflow-hidden">
+                            ${m.isSuperOver && m.status === 'completed' ? `<div class="absolute top-0 right-0 bg-red-600 text-[9px] font-black text-white px-3 py-1 rounded-bl-xl uppercase tracking-widest shadow-sm">Super Over</div>` : ''}
+                            
+                            <div class="text-[11px] font-black text-slate-500 uppercase mb-3 flex justify-between tracking-widest">
+                                <span class="${isPlayoff ? 'text-amber-400' : 'text-blue-400'}">${m.stage}</span>
+                                <span>${m.status === 'completed' ? 'Completed' : 'Upcoming'}</span>
+                            </div>
+
+                            <div class="flex justify-between items-center mb-1">
+                                <div class="flex-1 text-center ${m.winnerId && m.winnerId !== m.team1 && m.winnerId !== 'tie' ? 'opacity-40' : ''}">
+                                    <div class="text-4xl mb-1.5 drop-shadow-sm">${t1.emoji}</div>
+                                    <div class="text-sm font-bold truncate text-white">${t1.name}</div>
+                                    ${m.status !== 'pending' ? `<div class="font-display text-2xl text-slate-300 mt-1 leading-none">${m.t1Score}<span class="text-lg text-slate-500">/${m.t1Wickets}</span> <div class="text-[10px] text-slate-500 font-sans tracking-wide mt-0.5">(${utils.formatOvers(m.t1Balls)})</div></div>` : ''}
+                                </div>
+                                <div class="px-2 text-slate-700 font-black italic text-lg">VS</div>
+                                <div class="flex-1 text-center ${m.winnerId && m.winnerId !== m.team2 && m.winnerId !== 'tie' ? 'opacity-40' : ''}">
+                                    <div class="text-4xl mb-1.5 drop-shadow-sm">${t2.emoji}</div>
+                                    <div class="text-sm font-bold truncate text-white">${t2.name}</div>
+                                    ${m.status !== 'pending' ? `<div class="font-display text-2xl text-slate-300 mt-1 leading-none">${m.t2Score}<span class="text-lg text-slate-500">/${m.t2Wickets}</span> <div class="text-[10px] text-slate-500 font-sans tracking-wide mt-0.5">(${utils.formatOvers(m.t2Balls)})</div></div>` : ''}
+                                </div>
+                            </div>
+                            
+                            ${m.status === 'completed' ? `
+                                <div class="mt-4 text-center text-xs font-bold text-blue-300 bg-blue-900/30 py-2 rounded-xl border border-blue-800/50 uppercase tracking-wide">
+                                    ${winnerText}
+                                </div>
+                                <button onclick="app.navigate('scorecard', {matchId: '${m.id}'})" class="w-full mt-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs py-2.5 rounded-xl font-bold transition">View Scorecard</button>
+                            ` : `
+                                <button onclick="${actionFn}" class="w-full mt-5 bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-xl font-bold shadow-md transition active:scale-[0.98] tracking-wide">
+                                    ${btnText}
+                                </button>
+                            `}
+                        </div>
+                    `;
+                });
+
+                if (leagueCompleted && !t.playoffsGenerated) {
+                    content += `<button onclick="app.generatePlayoffs()" class="w-full bg-gradient-to-r from-amber-500 to-orange-600 text-white font-bold py-4 rounded-xl shadow-[0_0_15px_rgba(245,158,11,0.4)] mt-5 mb-4 active:scale-95 transition text-lg">Generate Playoffs</button>`;
+                }
+                content += `</div>`;
+            } 
+            else if (app.hubTab === 'table') {
+                let table = app.getPointsTable(t);
+                content = `
+                    <div class="fade-in bg-slate-900 rounded-2xl border border-slate-800 overflow-hidden shadow-sm mb-6">
+                        <table class="w-full text-sm text-left">
+                            <thead class="text-[10px] text-slate-400 bg-slate-950 uppercase tracking-widest border-b border-slate-800">
+                                <tr>
+                                    <th class="px-3 py-3.5 w-8 text-center">#</th>
+                                    <th class="px-2 py-3.5">Team</th>
+                                    <th class="px-2 py-3.5 text-center">P</th>
+                                    <th class="px-2 py-3.5 text-center text-green-400">W</th>
+                                    <th class="px-2 py-3.5 text-center text-blue-400 font-bold">Pts</th>
+                                    <th class="px-2 py-3.5 text-center">NRR</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-800/50">
+                                ${table.map((team, i) => `
+                                    <tr class="hover:bg-slate-800/50 transition ${i < 4 ? 'bg-blue-900/10' : ''}">
+                                        <td class="px-3 py-3.5 text-center font-bold text-slate-500">${i+1}</td>
+                                        <td class="px-2 py-3.5 font-bold text-white flex items-center gap-1.5">
+                                            <span class="text-base">${team.emoji}</span>
+                                            <span class="truncate w-16 sm:w-24">${team.name}</span>
+                                        </td>
+                                        <td class="px-2 py-3.5 text-center text-slate-400">${team.m}</td>
+                                        <td class="px-2 py-3.5 text-center font-semibold text-green-400">${team.w}</td>
+                                        <td class="px-2 py-3.5 text-center text-blue-400 font-black text-base">${team.pts}</td>
+                                        <td class="px-2 py-3.5 text-center text-[11px] font-mono font-medium ${team.nrr >= 0 ? 'text-slate-300' : 'text-red-400'}">${team.nrr > 0 ? '+'+team.nrr.toFixed(2) : team.nrr.toFixed(2)}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                        <div class="p-3 bg-slate-950 text-[10px] font-bold text-slate-500 text-center uppercase tracking-widest">Top 4 qualify for playoffs</div>
+                    </div>
+                `;
+            }
+            else if (app.hubTab === 'stats') {
+                let s = app.getTournamentStats(t);
+                
+                const statCard = (title, emoji, teamObj, value, colorClass, subtitle) => {
+                    if (!teamObj || value === 0) return '';
+                    return `
+                        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4.5 flex items-center gap-4 shadow-sm">
+                            <div class="text-4xl bg-slate-950 p-2.5 rounded-xl border border-slate-800 shadow-inner">${emoji}</div>
+                            <div class="flex-1">
+                                <div class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">${title}</div>
+                                <div class="text-base font-bold text-white leading-tight flex items-center gap-1.5">
+                                    <span>${teamObj.emoji}</span> ${teamObj.name}
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-3xl font-display font-bold ${colorClass} leading-none">${value}</div>
+                                <div class="text-[10px] font-bold text-slate-500 uppercase mt-1 tracking-wider">${subtitle}</div>
+                            </div>
+                        </div>
+                    `;
+                };
+
+                content = `
+                    <div class="fade-in space-y-3 pb-6">
+                        ${s.orangeCap && s.orangeCap.runs > 0 ? statCard('Orange Cap', '🏏', s.orangeCap, s.orangeCap.runs, 'text-orange-400', 'Runs') : ''}
+                        ${s.purpleCap && s.purpleCap.wickets > 0 ? statCard('Purple Cap', '🥎', s.purpleCap, s.purpleCap.wickets, 'text-purple-400', 'Wkts') : ''}
+                        ${s.mostSixes && s.mostSixes.sixes > 0 ? statCard('Maximum Sixes', '🚀', s.mostSixes, s.mostSixes.sixes, 'text-blue-400', 'Sixes') : ''}
+                        ${s.mostFours && s.mostFours.fours > 0 ? statCard('Maximum Fours', '✨', s.mostFours, s.mostFours.fours, 'text-emerald-400', 'Fours') : ''}
+                        
+                        ${!s.orangeCap || s.orangeCap.runs === 0 ? `
+                            <div class="text-center py-12 bg-slate-900 rounded-2xl border border-slate-800 text-slate-500 text-sm font-medium">
+                                Play some matches to generate stats!
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="h-14 bg-slate-900 flex items-center justify-between px-4 shadow-sm shrink-0 border-b border-slate-800 z-10">
+                    <button onclick="app.navigate('home')" class="p-2 -ml-2 text-blue-400 active:scale-90 transition"><i data-lucide="arrow-left"></i></button>
+                    <h1 class="text-xl font-bold font-display text-white uppercase truncate px-2 tracking-wide">${t.name}</h1>
+                    <button onclick="app.deleteTournament('${t.id}')" class="p-2 -mr-2 text-slate-600 hover:text-red-500 transition active:scale-90"><i data-lucide="trash-2" class="w-5 h-5"></i></button>
+                </div>
+
+                <div class="flex bg-slate-900 shrink-0 p-2.5 gap-2 shadow-sm relative z-0 border-b border-slate-800/50">
+                    <button onclick="app.setHubTab('schedule')" class="flex-1 py-2 text-xs sm:text-sm font-bold rounded-lg transition ${app.hubTab==='schedule' ? 'bg-slate-800 text-white shadow-sm border border-slate-700' : 'text-slate-400 hover:bg-slate-800'}">Matches</button>
+                    <button onclick="app.setHubTab('table')" class="flex-1 py-2 text-xs sm:text-sm font-bold rounded-lg transition ${app.hubTab==='table' ? 'bg-slate-800 text-white shadow-sm border border-slate-700' : 'text-slate-400 hover:bg-slate-800'}">Table</button>
+                    <button onclick="app.setHubTab('stats')" class="flex-1 py-2 text-xs sm:text-sm font-bold rounded-lg transition ${app.hubTab==='stats' ? 'bg-slate-800 text-white shadow-sm border border-slate-700' : 'text-slate-400 hover:bg-slate-800'}">Stats</button>
+                </div>
+
+                <div class="flex-1 overflow-y-auto p-4 no-scrollbar bg-slate-950">
+                    ${content}
+                </div>
+            `;
+        }
+
+        function renderToss() {
+            const t = state.tournaments.find(x => x.id === state.activeTourneyId);
+            const m = t.matches.find(x => x.id === state.activeMatchId);
+            const t1 = t.teams.find(x => x.id === m.team1);
+            const t2 = t.teams.find(x => x.id === m.team2);
+
+            let content = '';
+            if (app.tossState === 'flipping') {
+                content = `
+                    <div class="flex flex-col items-center justify-center h-64 gap-6">
+                        <div class="w-28 h-28 bg-yellow-400 rounded-full flex items-center justify-center text-6xl shadow-[0_0_40px_rgba(250,204,21,0.5)] coin-flip border-4 border-yellow-200 z-10">🪙</div>
+                        <div class="text-slate-400 font-bold animate-pulse text-lg tracking-widest uppercase mt-4">Flipping...</div>
+                    </div>
+                `;
+            } else if (app.tossState === 'result') {
+                let winner = app.tossWinnerIdx === 1 ? t1 : t2;
+                content = `
+                    <div class="flex flex-col items-center justify-center py-8 gap-4 fade-in text-center">
+                        <div class="text-7xl drop-shadow-xl mb-2">${winner.emoji}</div>
+                        <h2 class="text-3xl font-bold text-white leading-tight font-display tracking-wide">${winner.name}<br><span class="text-yellow-400 text-2xl font-sans">won the toss!</span></h2>
+                        <p class="text-slate-400 mb-5 text-sm mt-2 font-medium">What is their decision?</p>
+                        
+                        <div class="flex gap-4 w-full px-6">
+                            <button onclick="app.completeToss('bat')" class="flex-1 bg-blue-600 text-white font-bold py-5 rounded-2xl shadow-[0_5px_20px_rgba(37,99,235,0.4)] transition active:scale-95 flex flex-col items-center justify-center gap-1.5 border border-blue-500">
+                                <span class="text-3xl">🏏</span>
+                                <span class="tracking-wide">Bat First</span>
+                            </button>
+                            <button onclick="app.completeToss('bowl')" class="flex-1 bg-red-600 text-white font-bold py-5 rounded-2xl shadow-[0_5px_20px_rgba(220,38,38,0.4)] transition active:scale-95 flex flex-col items-center justify-center gap-1.5 border border-red-500">
+                                <span class="text-3xl">🥎</span>
+                                <span class="tracking-wide">Bowl First</span>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            } else {
+                content = `
+                    <div class="flex justify-between items-center px-6 py-12 relative">
+                        <div class="text-center z-10 flex-1">
+                            <div class="text-6xl mb-4 drop-shadow-lg">${t1.emoji}</div>
+                            <div class="font-bold text-white text-lg">${t1.name}</div>
+                        </div>
+                        <div class="text-2xl font-black italic text-slate-600 px-4 bg-slate-900 rounded-full py-2 border border-slate-800 shadow-inner">VS</div>
+                        <div class="text-center z-10 flex-1">
+                            <div class="text-6xl mb-4 drop-shadow-lg">${t2.emoji}</div>
+                            <div class="font-bold text-white text-lg">${t2.name}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="text-center px-6 mt-6">
+                        <button onclick="app.doToss()" class="w-full bg-gradient-to-r from-yellow-500 to-amber-600 text-white font-black text-xl py-4.5 rounded-2xl shadow-[0_0_25px_rgba(245,158,11,0.5)] active:scale-95 transition tracking-widest border border-yellow-400">
+                            FLIP COIN
+                        </button>
+                    </div>
+                `;
+            }
+
+            return `
+                ${TopBar("Match Toss", 'hub', {tourneyId: t.id})}
+                <div class="flex-1 p-4 bg-slate-950 flex flex-col justify-center">
+                    <div class="bg-slate-900 border border-slate-800 rounded-3xl pb-8 overflow-hidden shadow-xl relative">
+                        <div class="bg-slate-950 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center py-3 border-b border-slate-800 shadow-sm">
+                            ${m.stage} Match
+                        </div>
+                        ${content}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderMatch() {
+            const t = state.tournaments.find(x => x.id === state.activeTourneyId);
+            const m = t.matches.find(x => x.id === state.activeMatchId);
+            
+            // Failsafe rendering if accidentally called
+            if(m.status === 'completed') return `<div class="flex h-full items-center justify-center bg-slate-950 text-slate-400 animate-pulse font-bold">Loading...</div>`;
+
+            const t1 = t.teams.find(x => x.id === m.team1);
+            const t2 = t.teams.find(x => x.id === m.team2);
+            
+            let isSuper = m.isSuperOver;
+            let inn = isSuper ? m.soInn : m.inn;
+            let batT = inn === 1 ? t1 : t2;
+            
+            let score = isSuper ? (inn === 1 ? m.soT1Score : m.soT2Score) : (inn === 1 ? m.t1Score : m.t2Score);
+            let wickets = isSuper ? (inn === 1 ? m.soT1Wickets : m.soT2Wickets) : (inn === 1 ? m.t1Wickets : m.t2Wickets);
+            let balls = isSuper ? (inn === 1 ? m.soT1Balls : m.soT2Balls) : (inn === 1 ? m.t1Balls : m.t2Balls);
+            let remSuper = inn === 1 ? m.t1Super : m.t2Super;
+            let remLife = inn === 1 ? m.t1Life : m.t2Life;
+            
+            let targetHtml = '';
+            if (inn === 2) {
+                let target = (isSuper ? m.soT1Score : m.t1Score) + 1;
+                let needed = target - score;
+                let remBalls = (isSuper ? 6 : t.settings.balls) - balls;
+                targetHtml = `
+                    <div class="bg-slate-800/90 text-center py-2 border-y border-slate-700 flex justify-around items-center px-4 shadow-inner">
+                        <div class="text-xs text-slate-300 font-medium">Target: <span class="font-bold text-white text-sm ml-1">${target}</span></div>
+                        <div class="h-4 w-px bg-slate-600"></div>
+                        <div class="text-[11px] text-blue-300 font-bold uppercase tracking-widest pulse-text">Need ${needed} from ${remBalls}</div>
+                    </div>
+                `;
+            }
+
+            let controlsHtml = '';
+            if (m.pendingWicket) {
+                controlsHtml = `
+                    <div class="bg-slate-900 p-5 pb-8 rounded-t-[32px] shadow-[0_-10px_40px_-5px_rgba(0,0,0,0.6)] z-20 text-center border-t border-red-900/40 fade-in">
+                        <div class="bg-red-500/10 inline-block px-4 py-1.5 rounded-full border border-red-500/30 mb-3">
+                            <h3 class="text-red-500 font-black text-xl animate-pulse tracking-widest">🚨 WICKET! 🚨</h3>
+                        </div>
+                        <p class="text-slate-300 text-sm mb-5 font-medium px-4">Batsman is OUT! Do you want to use a Life Card to cancel it?</p>
+                        
+                        <div class="flex flex-col gap-3">
+                            <button onclick="app.handleWicketDecision(true)" class="w-full bg-gradient-to-r from-teal-500 to-emerald-600 text-white font-bold py-4 rounded-xl transition shadow-[0_0_15px_rgba(16,185,129,0.4)] active:scale-95 ${remLife <= 0 ? 'opacity-40 grayscale cursor-not-allowed shadow-none' : ''}" ${remLife <= 0 ? 'disabled' : ''}>
+                                🛡️ Use Life Card (${remLife} left)
+                            </button>
+                            <button onclick="app.handleWicketDecision(false)" class="w-full bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-300 font-bold py-4 rounded-xl transition active:scale-95">
+                                Accept Wicket
+                            </button>
+                        </div>
+                    </div>
+                `;
+            } else {
+                controlsHtml = `
+                    <div class="bg-slate-900 p-3 pt-4 rounded-t-[32px] shadow-[0_-10px_30px_-5px_rgba(0,0,0,0.6)] z-20 border-t border-slate-800">
+                        <div class="flex justify-between items-center mb-3 px-2">
+                            <div class="text-[11px] font-bold text-teal-400 bg-teal-900/20 px-2.5 py-1.5 rounded-lg border border-teal-800/40 tracking-wider">
+                                🛡️ Life Cards: <span class="text-white">${remLife}</span>
+                            </div>
+                            ${t.settings.superShots > 0 ? `
+                                <button onclick="app.toggleSuperShot()" class="px-3.5 py-1.5 rounded-lg text-[11px] font-bold uppercase tracking-wider border transition-all ${app.activeSuperShot ? 'bg-gradient-to-r from-orange-500 to-red-500 text-white border-transparent shadow-[0_0_15px_rgba(249,115,22,0.6)]' : 'bg-slate-800 text-orange-400 border-orange-500/40 hover:bg-slate-700'} ${remSuper <= 0 ? 'opacity-40 cursor-not-allowed shadow-none border-slate-700 text-slate-500' : ''}" ${remSuper <= 0 ? 'disabled' : ''}>
+                                    🔥 Super Shot (${remSuper})
+                                </button>
+                            ` : '<div></div>'}
+                        </div>
+
+                        <div class="grid grid-cols-3 gap-2.5">
+                            ${[1, 2, 3, 5].map(r => `<button onclick="app.playBall(${r})" class="match-btn bg-slate-800 hover:bg-slate-700 text-white h-14 rounded-2xl text-2xl font-display font-bold border-b-4 border-slate-950 flex justify-center items-center shadow-sm">${r}</button>`).join('')}
+                            <button onclick="app.playBall(4)" class="match-btn bg-blue-900/40 hover:bg-blue-800 text-blue-300 h-14 rounded-2xl text-2xl font-display font-bold border-b-4 border-slate-950 flex justify-center items-center border border-blue-500/30 shadow-sm row-start-2 col-start-2">4</button>
+                            <button onclick="app.playBall(6)" class="match-btn bg-amber-900/40 hover:bg-amber-800 text-amber-400 h-14 rounded-2xl text-3xl font-display font-bold border-b-4 border-slate-950 flex justify-center items-center border border-amber-500/40 shadow-sm row-start-2 col-start-3">6</button>
+                        </div>
+                        
+                        <div class="grid grid-cols-2 gap-2.5 mt-2.5">
+                            <button onclick="app.playBall(0)" class="match-btn bg-slate-800 hover:bg-slate-700 text-slate-400 h-14 rounded-2xl text-base font-bold border-b-4 border-slate-950 uppercase tracking-widest shadow-sm">Dot (0)</button>
+                            <button onclick="app.playBall(0, true)" class="match-btn bg-red-600 hover:bg-red-500 text-white h-14 rounded-2xl text-xl font-black border-b-4 border-red-900 uppercase tracking-widest shadow-[0_0_15px_rgba(220,38,38,0.3)]">OUT</button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="h-12 bg-slate-900 flex items-center justify-between px-4 shadow-sm shrink-0 z-20">
+                    <button onclick="app.navigate('hub', {tourneyId: '${t.id}'})" class="p-2 -ml-2 text-slate-400 active:scale-90 transition"><i data-lucide="x" class="w-5 h-5"></i></button>
+                    <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest bg-slate-950 px-4 py-1.5 rounded-full border border-slate-800 shadow-inner">${m.stage}</div>
+                    <div class="w-8"></div>
+                </div>
+
+                ${isSuper ? `<div class="bg-red-600 text-white text-center py-1.5 font-black text-[10px] uppercase tracking-widest animate-pulse shadow-md">⚔️ SUPER OVER ACTIVE ⚔️</div>` : ''}
+
+                <!-- High-Impact Scoreboard -->
+                <div class="bg-gradient-to-b from-slate-900 to-slate-950 pb-3 pt-3 shadow-xl z-10 relative border-b border-slate-800/50">
+                    <div class="flex justify-between items-center px-8 mb-2">
+                        <div class="text-center opacity-${inn===2? '40':'100'} transition-opacity duration-300">
+                            <div class="text-2xl drop-shadow-md mb-0.5">${t1.emoji}</div>
+                            <div class="text-[10px] text-slate-400 uppercase font-black tracking-wider truncate w-16">${t1.name}</div>
+                            ${isSuper ? `<div class="text-[9px] text-slate-500 mt-1 font-bold">Match: ${m.t1Score}/${m.t1Wickets}</div>` : (inn === 2 ? `<div class="font-display text-xl text-slate-300 leading-none mt-1">${m.t1Score}<span class="text-sm text-slate-500">/${m.t1Wickets}</span></div>` : '')}
+                        </div>
+                        <div class="flex flex-col items-center">
+                            <div class="text-[10px] font-black text-slate-600 italic bg-slate-900 px-2.5 py-0.5 rounded shadow-inner">VS</div>
+                            ${m.tossDone && !isSuper ? `<div class="text-[8px] text-amber-500/80 uppercase font-bold tracking-widest mt-1.5">Toss: ${t.teams.find(x=>x.id===m.tossWinnerId).emoji} ${m.tossChoice}</div>` : ''}
+                        </div>
+                        <div class="text-center opacity-${inn===1? '40':'100'} transition-opacity duration-300">
+                            <div class="text-2xl drop-shadow-md mb-0.5">${t2.emoji}</div>
+                            <div class="text-[10px] text-slate-400 uppercase font-black tracking-wider truncate w-16">${t2.name}</div>
+                            ${isSuper ? `<div class="text-[9px] text-slate-500 mt-1 font-bold">Match: ${m.t2Score}/${m.t2Wickets}</div>` : (inn === 2 ? `<div class="text-[9px] text-slate-500 font-bold uppercase tracking-wider mt-1">Batting</div>` : '')}
+                        </div>
+                    </div>
+
+                    <div class="text-center mt-2">
+                        <div class="text-[10px] ${isSuper ? 'text-red-400' : 'text-slate-400'} uppercase tracking-widest font-black mb-0.5">${batT.name} BATTING</div>
+                        <div class="text-6xl font-display font-bold text-white tracking-tight leading-none drop-shadow-lg">
+                            ${score}<span class="text-4xl text-slate-500">/${wickets}</span>
+                        </div>
+                        <div class="text-xs font-bold text-slate-300 mt-2 bg-slate-900 inline-block px-3.5 py-1 rounded-full border border-slate-800 shadow-inner">
+                            Over <span class="text-white">${utils.formatOvers(balls)}</span> <span class="text-slate-600 mx-1.5">|</span> <span class="text-slate-500 text-[10px] uppercase tracking-wider">Max ${isSuper ? 1 : t.settings.balls/6}</span>
+                        </div>
+                    </div>
+                </div>
+
+                ${targetHtml}
+
+                <!-- Enhanced Commentary Feed -->
+                <div class="flex-1 bg-slate-950 overflow-y-auto p-4 flex flex-col-reverse gap-3.5 commentary-scroll shadow-inner">
+                    ${m.logs.length === 0 ? `<div class="text-center text-slate-600 text-sm mt-auto italic font-medium">Match ready. Tap buttons to score.</div>` : ''}
+                    ${m.logs.map((log) => `
+                        <div class="text-[15px] leading-snug p-3.5 rounded-xl border-l-4 shadow-sm fade-in ${
+                            log.includes('CATASTROPHE') ? 'bg-red-950 border-red-600 text-red-200 font-bold shadow-[0_2px_10px_rgba(220,38,38,0.2)]' :
+                            log.includes('LIFE CARD USED') ? 'bg-teal-950/80 border-teal-500 text-teal-200 shadow-[0_2px_10px_rgba(20,184,166,0.1)]' :
+                            log.includes('SUPER OVER') ? 'bg-red-900/30 border-red-500 text-white font-bold text-center text-xs tracking-widest uppercase' :
+                            log.includes('WICKET') ? 'bg-red-900/10 border-red-500 text-red-200 font-medium' : 
+                            log.includes('SUPER SHOT') ? 'bg-amber-900/10 border-amber-500 text-amber-200 font-medium' : 
+                            log.includes('---') || log.includes('Toss:') ? 'bg-slate-900 border-blue-500 text-blue-300 text-center text-[11px] font-black uppercase tracking-widest' : 
+                            'bg-slate-900 border-slate-700 text-slate-200 font-medium'
+                        }">
+                            ${log.replace('Ball ', '<span class="text-slate-500 font-mono mr-2.5 text-[13px] font-bold">').replace(':', '</span>')}
+                        </div>
+                    `).join('')}
+                </div>
+
+                ${controlsHtml}
+            `;
+        }
+
+        function renderScorecard() {
+            const t = state.tournaments.find(x => x.id === state.activeTourneyId);
+            const m = t.matches.find(x => x.id === state.activeMatchId);
+            const t1 = t.teams.find(x => x.id === m.team1);
+            const t2 = t.teams.find(x => x.id === m.team2);
+
+            let resultText = "Match Tied";
+            let resultColor = "text-slate-300";
+            
+            if (m.isSuperOver && m.winnerId !== 'tie') {
+                resultText = `${t.teams.find(x=>x.id===m.winnerId).name} won the Super Over!`;
+                resultColor = "text-amber-400";
+            } else if (m.winnerId === t1.id) {
+                let runs = m.t1Score - m.t2Score;
+                resultText = `${t1.name} won by ${runs} run${runs>1?'s':''}`;
+                resultColor = "text-blue-400";
+            } else if (m.winnerId === t2.id) {
+                let wkts = t.settings.wickets - m.t2Wickets;
+                resultText = `${t2.name} won by ${wkts} wkt${wkts>1?'s':''}`;
+                resultColor = "text-blue-400";
+            }
+
+            return `
+                ${TopBar("Scorecard", 'hub', {tourneyId: t.id})}
+                <div class="flex-1 overflow-y-auto p-4 fade-in no-scrollbar bg-slate-950">
+                    
+                    <div class="bg-slate-900 rounded-3xl p-6 text-center shadow-lg border border-slate-800 relative overflow-hidden mb-6">
+                        <div class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-5">${m.stage} Match</div>
+                        
+                        <div class="flex justify-between items-center mb-5 relative z-10">
+                            <div class="flex-1">
+                                <div class="text-5xl mb-2 drop-shadow-md">${t1.emoji}</div>
+                                <div class="text-sm font-bold text-slate-300 truncate">${t1.name}</div>
+                                <div class="font-display text-4xl font-bold mt-1.5 text-white leading-none">${m.t1Score}<span class="text-2xl text-slate-500">/${m.t1Wickets}</span></div>
+                                <div class="text-[11px] font-medium text-slate-500 mt-1.5 bg-slate-950 inline-block px-2 py-0.5 rounded border border-slate-800">${utils.formatOvers(m.t1Balls)} ov</div>
+                            </div>
+                            <div class="px-3 text-slate-700 font-black italic text-2xl">VS</div>
+                            <div class="flex-1">
+                                <div class="text-5xl mb-2 drop-shadow-md">${t2.emoji}</div>
+                                <div class="text-sm font-bold text-slate-300 truncate">${t2.name}</div>
+                                <div class="font-display text-4xl font-bold mt-1.5 text-white leading-none">${m.t2Score}<span class="text-2xl text-slate-500">/${m.t2Wickets}</span></div>
+                                <div class="text-[11px] font-medium text-slate-500 mt-1.5 bg-slate-950 inline-block px-2 py-0.5 rounded border border-slate-800">${utils.formatOvers(m.t2Balls)} ov</div>
+                            </div>
+                        </div>
+
+                        ${m.isSuperOver ? `
+                            <div class="bg-red-950/40 border border-red-500/20 rounded-2xl p-4 relative overflow-hidden mt-3 mb-3 shadow-inner">
+                                <div class="text-[10px] text-red-400 font-black uppercase tracking-widest text-center mb-2.5">⚔️ Super Over Box ⚔️</div>
+                                <div class="flex justify-between items-center text-white">
+                                    <div class="text-center flex-1">
+                                        <div class="font-display text-3xl leading-none">${m.soT1Score}<span class="text-xl text-red-300/50">/${m.soT1Wickets}</span></div>
+                                        <div class="text-[10px] font-medium text-red-200/50 mt-1">${utils.formatOvers(m.soT1Balls)} ov</div>
+                                    </div>
+                                    <div class="text-xs text-red-500/30 font-black italic px-2">VS</div>
+                                    <div class="text-center flex-1">
+                                        <div class="font-display text-3xl leading-none">${m.soT2Score}<span class="text-xl text-red-300/50">/${m.soT2Wickets}</span></div>
+                                        <div class="text-[10px] font-medium text-red-200/50 mt-1">${utils.formatOvers(m.soT2Balls)} ov</div>
+                                    </div>
+                                </div>
+                            </div>
+                        ` : ''}
+
+                        <div class="bg-slate-950/50 py-3.5 rounded-xl border border-slate-800 mt-5">
+                            <div class="font-bold ${resultColor} text-sm uppercase tracking-wider">${resultText}</div>
+                        </div>
+                    </div>
+
+                    <h3 class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 ml-1">Match Highlights</h3>
+                    <div class="bg-slate-900 rounded-2xl p-4 border border-slate-800 space-y-2 h-64 overflow-y-auto no-scrollbar shadow-inner">
+                        ${m.logs.filter(l => l.includes('WICKET') || l.includes('6 Runs') || l.includes('SUPER') || l.includes('Toss:') || l.includes('CATASTROPHE') || l.includes('LIFE CARD')).map(log => `
+                            <div class="text-[11px] p-2.5 rounded-lg bg-slate-950 border-l-2 ${
+                                log.includes('CATASTROPHE') ? 'border-red-600 text-red-300 font-bold' :
+                                log.includes('SUPER OVER') ? 'border-red-500 text-white font-bold' :
+                                log.includes('WICKET') ? 'border-red-500 text-slate-300' : 
+                                log.includes('LIFE CARD') ? 'border-teal-500 text-teal-300' :
+                                log.includes('Toss') ? 'border-blue-500 text-blue-300 font-medium' : 
+                                'border-amber-500 text-slate-300'
+                            }">
+                                ${log.replace('Ball ', '<span class="text-slate-600 font-mono mr-2">').replace(':', '</span>')}
+                            </div>
+                        `).join('')}
+                        ${m.logs.length === 0 ? `<div class="text-slate-600 text-center text-xs py-4 font-medium">No highlights recorded.</div>` : ''}
+                    </div>
+                    
+                    <button onclick="app.navigate('hub', {tourneyId: '${t.id}'})" class="w-full mt-6 bg-blue-600 text-white font-bold py-4 rounded-xl shadow-lg hover:bg-blue-500 transition active:scale-95 text-lg tracking-wide">
+                        Back to Hub
+                    </button>
+                </div>
+            `;
+        }
+
+        function renderAwards() {
+            const t = state.tournaments.find(x => x.id === state.activeTourneyId);
+            let s = app.getTournamentStats(t);
+            let champion = t.teams.find(x => x.id === t.winner);
+            
+            let finalMatch = t.matches.find(m => m.stage === 'Final');
+            let runnerUpId = finalMatch ? (finalMatch.winnerId === finalMatch.team1 ? finalMatch.team2 : finalMatch.team1) : null;
+            let runnerUp = runnerUpId ? t.teams.find(x => x.id === runnerUpId) : null;
+
+            return `
+                ${TopBar("Season Summary", 'hub', {tourneyId: t.id})}
+                <div class="flex-1 overflow-y-auto p-4 fade-in no-scrollbar bg-slate-950 pb-10">
+                    
+                    <div class="text-center mb-8 mt-6">
+                        <i data-lucide="trophy" class="w-14 h-14 mx-auto text-yellow-500 mb-3 drop-shadow-[0_0_20px_rgba(234,179,8,0.6)]"></i>
+                        <h2 class="text-4xl font-display font-bold text-white glow-text tracking-wider uppercase leading-none">${t.name}</h2>
+                        <div class="text-[10px] text-slate-400 font-black uppercase tracking-widest mt-2">Post-Match Presentation</div>
+                    </div>
+
+                    <!-- Champions Box -->
+                    <div class="bg-gradient-to-br from-yellow-600 to-amber-700 p-8 rounded-[32px] text-center shadow-[0_10px_30px_-5px_rgba(245,158,11,0.3)] border border-yellow-400/50 mb-6 relative overflow-hidden">
+                        <h3 class="text-yellow-100 text-[10px] font-black uppercase tracking-widest mb-4 relative z-10 drop-shadow-md">🏆 CHAMPIONS</h3>
+                        <div class="text-7xl drop-shadow-2xl mb-3 relative z-10 transform scale-110">${champion.emoji}</div>
+                        <div class="text-4xl font-display font-bold text-white relative z-10 tracking-wide">${champion.name}</div>
+                    </div>
+
+                    ${runnerUp ? `
+                        <div class="bg-slate-900 p-4 rounded-2xl text-center border border-slate-800 mb-8 flex items-center justify-center gap-3 shadow-sm">
+                            <span class="text-[10px] text-slate-500 uppercase font-black tracking-widest">Runner Up:</span>
+                            <span class="text-2xl">${runnerUp.emoji}</span>
+                            <span class="font-bold text-white text-lg">${runnerUp.name}</span>
+                        </div>
+                    ` : ''}
+
+                    <div class="grid grid-cols-2 gap-3 mb-6">
+                        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 text-center shadow-sm">
+                            <div class="text-[10px] text-orange-400 font-black uppercase tracking-widest mb-3">Orange Cap</div>
+                            <div class="text-4xl mb-2">${s.orangeCap.emoji}</div>
+                            <div class="font-bold text-white text-sm truncate">${s.orangeCap.name}</div>
+                            <div class="text-3xl font-display text-orange-400 mt-1 leading-none">${s.orangeCap.runs} <span class="text-[11px] font-sans font-medium text-slate-500">runs</span></div>
+                        </div>
+                        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 text-center shadow-sm">
+                            <div class="text-[10px] text-purple-400 font-black uppercase tracking-widest mb-3">Purple Cap</div>
+                            <div class="text-4xl mb-2">${s.purpleCap.emoji}</div>
+                            <div class="font-bold text-white text-sm truncate">${s.purpleCap.name}</div>
+                            <div class="text-3xl font-display text-purple-400 mt-1 leading-none">${s.purpleCap.wickets} <span class="text-[11px] font-sans font-medium text-slate-500">wkts</span></div>
+                        </div>
+                    </div>
+
+                    <!-- MVP -->
+                    <div class="bg-gradient-to-r from-blue-900 to-indigo-900 p-5 rounded-2xl border border-blue-500/40 mb-8 flex items-center gap-5 shadow-lg">
+                        <div class="text-5xl drop-shadow-md bg-slate-950/50 p-3 rounded-2xl border border-blue-400/20">${s.mvp.emoji}</div>
+                        <div class="flex-1">
+                            <div class="text-[9px] text-blue-300 uppercase font-black tracking-widest mb-1.5">Most Valuable Player</div>
+                            <div class="text-xl font-bold text-white tracking-wide">${s.mvp.name}</div>
+                            <div class="text-xs font-medium text-slate-400 mt-1">${s.mvp.mvpPts} Performance Pts</div>
+                        </div>
+                    </div>
+
+                    <h3 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3 ml-1 border-b border-slate-800 pb-2">Tournament Records</h3>
+                    <div class="space-y-2.5 mb-8">
+                        <div class="bg-slate-900 p-3.5 rounded-xl border border-slate-800 flex justify-between items-center shadow-sm">
+                            <span class="text-xs font-medium text-slate-400">Highest Score</span>
+                            <span class="font-bold text-white text-sm">${s.highestScore.team ? `${s.highestScore.team.emoji} ${s.highestScore.team.name} <span class="text-slate-600 mx-1">|</span> <span class="text-blue-400 font-display text-xl leading-none relative top-0.5">${s.highestScore.score}</span>` : 'N/A'}</span>
+                        </div>
+                        <div class="bg-slate-900 p-3.5 rounded-xl border border-slate-800 flex justify-between items-center shadow-sm">
+                            <span class="text-xs font-medium text-slate-400">Highest Chase</span>
+                            <span class="font-bold text-white text-sm">${s.highestChase.team ? `${s.highestChase.team.emoji} ${s.highestChase.team.name} <span class="text-slate-600 mx-1">|</span> <span class="text-green-400 font-display text-xl leading-none relative top-0.5">${s.highestChase.score}</span>` : 'N/A'}</span>
+                        </div>
+                        <div class="bg-slate-900 p-3.5 rounded-xl border border-slate-800 flex justify-between items-center shadow-sm">
+                            <span class="text-xs font-medium text-slate-400">Lowest Defend</span>
+                            <span class="font-bold text-white text-sm">${s.lowestDefend.team && s.lowestDefend.score !== 9999 ? `${s.lowestDefend.team.emoji} ${s.lowestDefend.team.name} <span class="text-slate-600 mx-1">|</span> <span class="text-red-400 font-display text-xl leading-none relative top-0.5">${s.lowestDefend.score}</span>` : 'N/A'}</span>
+                        </div>
+                    </div>
+
+                    <button onclick="app.navigate('home')" class="w-full bg-slate-800 text-white font-bold py-4.5 rounded-xl border border-slate-700 hover:bg-slate-700 transition active:scale-95 tracking-wide text-lg">
+                        Return to Home
+                    </button>
+                </div>
+            `;
+        }
+
+        // --- CORE INITIALIZATION ---
+        function render() {
+            const root = document.getElementById('app');
+            let html = '';
+            try {
+                switch(state.view) {
+                    case 'home': html = renderHome(); break;
+                    case 'create': html = renderCreate(); break;
+                    case 'hub': html = renderHub(); break;
+                    case 'toss': html = renderToss(); break;
+                    case 'match': html = renderMatch(); break;
+                    case 'scorecard': html = renderScorecard(); break;
+                    case 'awards': html = renderAwards(); break;
+                    default: html = renderHome();
+                }
+            } catch (e) {
+                console.error("Render Error:", e);
+                html = `
+                    <div class="flex flex-col h-full items-center justify-center p-8 text-center text-red-400 bg-slate-950">
+                        <i data-lucide="alert-triangle" class="w-12 h-12 mb-4 text-red-500"></i>
+                        <h2 class="text-xl font-bold text-white mb-2">Something went wrong</h2>
+                        <p class="text-sm text-slate-400 mb-6">${e.message}</p>
+                        <button onclick="localStorage.removeItem('${STORAGE_KEY}'); location.reload()" class="bg-red-600 text-white font-bold px-6 py-3 rounded-xl shadow-lg active:scale-95 transition">Factory Reset App</button>
+                    </div>
+                `;
+            }
+            root.innerHTML = html;
+            lucide.createIcons();
+        }
+
+        render();
+    </script>
+</body>
+</html>
+
+
+
