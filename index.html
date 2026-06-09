@@ -11,7 +11,7 @@
         
         body {
             font-family: 'Inter', sans-serif;
-            background-color: #020617;
+            background-color: #020617; 
             color: #f8fafc;
             -webkit-tap-highlight-color: transparent;
             overscroll-behavior-y: none;
@@ -57,7 +57,7 @@
 
     <script>
         // --- DATA & STATE MANAGEMENT ---
-        const STORAGE_KEY = 'hcpl_franchise_edition_v1';
+        const STORAGE_KEY = 'hcpl_franchise_edition_v_auto_rivalry';
 
         const utils = {
             id: () => Math.random().toString(36).substr(2, 9),
@@ -86,12 +86,17 @@
             }),
             checkRivalry: (t1, t2, currentState) => {
                 let champs = [];
-                currentState.tournaments.forEach(t => { if (t.winner && !champs.includes(t.winner)) champs.push(t.winner); });
-                if (champs.includes(t1.id) && champs.includes(t2.id) && t1.id !== t2.id) return true;
-                // Default Rivalry fallback
-                let f1 = currentState.franchises[0]?.id; let f2 = currentState.franchises[1]?.id;
-                if (champs.length < 2 && ((t1.id === f1 && t2.id === f2) || (t1.id === f2 && t2.id === f1))) return true;
-                return false;
+                // Find all previous champions globally
+                currentState.tournaments.forEach(t => { 
+                    if (t.winner && !champs.includes(t.winner)) champs.push(t.winner); 
+                });
+                
+                // AUTO RIVALRY: Agar dono team minimum 1 baar champion ban chuki hain, toh Rivalry trigger hogi!
+                if (champs.includes(t1.id) && champs.includes(t2.id) && t1.id !== t2.id) {
+                    return true;
+                }
+                
+                return false; // No more hardcoded fake rivalries
             }
         };
 
@@ -120,6 +125,7 @@
             
             tempTeams: [],
             initCreateScreen: () => {
+                // Pre-load all saved global franchises
                 app.tempTeams = state.franchises.map(f => ({ ...f }));
                 app.navigate('create');
             },
@@ -147,15 +153,18 @@
                 // 1. Sync Franchise changes globally
                 app.tempTeams.forEach(tt => {
                     let existing = state.franchises.find(f => f.id === tt.id);
-                    if (existing) { existing.name = tt.name; existing.emoji = tt.emoji; existing.owner = tt.owner; } 
-                    else { state.franchises.push({ ...tt }); }
+                    if (existing) { 
+                        existing.name = tt.name; existing.emoji = tt.emoji; existing.owner = tt.owner; 
+                    } else { 
+                        state.franchises.push({ ...tt }); 
+                    }
                 });
 
                 // 2. Snapshot teams for this specific season
                 const seasonTeams = [...app.tempTeams];
                 const newTourney = { id: utils.id(), name, settings, teams: seasonTeams, matches: [], playoffsGenerated: false, winner: null };
 
-                // 3. Circle Algorith Scheduler
+                // 3. Perfect Circle Algorithm Scheduler
                 let teamIds = seasonTeams.map(t => t.id);
                 if (teamIds.length % 2 !== 0) teamIds.push(null); 
                 let numTeams = teamIds.length; let rounds = numTeams - 1; let half = numTeams / 2;
@@ -448,7 +457,7 @@
                                 <i data-lucide="play-circle" class="w-6 h-6"></i> <span class="text-xs">New Season</span>
                             </button>
                             <button onclick="app.navigate('franchises')" class="w-full bg-slate-800 text-white font-bold py-3.5 rounded-xl shadow-lg border border-slate-700 hover:bg-slate-700 flex flex-col justify-center items-center gap-1 transition active:scale-95">
-                                <i data-lucide="building-2" class="w-6 h-6 text-blue-400"></i> <span class="text-xs">Franchise Records</span>
+                                <i data-lucide="building-2" class="w-6 h-6 text-blue-400"></i> <span class="text-xs">Franchises</span>
                             </button>
                         </div>
                     </div>
@@ -480,6 +489,7 @@
         }
 
         function renderFranchises() {
+            // Aggregating All-Time Records dynamically
             let franchises = state.franchises.map(f => {
                 let titles = state.tournaments.filter(t => t.winner === f.id).length;
                 let matches = 0; let wins = 0; let runs = 0; let wkts = 0;
@@ -497,10 +507,11 @@
 
             franchises.sort((a, b) => b.titles - a.titles || b.wins - a.wins);
 
-            let content = franchises.map((f, i) => `
+            let content = franchises.length === 0 ? `<p class="text-slate-500 text-center text-sm py-10">No franchises found.</p>` : 
+                franchises.map((f, i) => `
                 <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 mb-4 shadow-sm relative overflow-hidden">
                     ${f.titles > 0 ? `<div class="absolute top-0 right-0 bg-yellow-500 text-[10px] font-black text-yellow-900 px-3 py-1 rounded-bl-xl uppercase tracking-widest shadow-sm">🏆 ${f.titles} Title${f.titles>1?'s':''}</div>` : ''}
-                    <div class="flex items-center gap-4 mb-3">
+                    <div class="flex items-center gap-4 mb-3 mt-1">
                         <div class="text-5xl drop-shadow-md">${f.emoji}</div>
                         <div>
                             <div class="text-xl font-display font-bold text-white tracking-wide leading-none">${f.name}</div>
@@ -648,6 +659,8 @@
                     let t1 = getTeam(m.team1); let t2 = getTeam(m.team2);
                     let isPlayoff = m.stage !== 'League';
                     let isTossDone = m.tossDone || m.status === 'active' || m.status === 'completed';
+                    
+                    // Call dynamic rivalry check
                     let isRivalry = utils.checkRivalry(t1, t2, state);
 
                     let actionFn = (!isTossDone && m.status === 'pending') 
@@ -661,9 +674,16 @@
                         winnerText = m.isSuperOver ? `${getTeam(m.winnerId).name} won by Super Over` : `${getTeam(m.winnerId).name} won`;
                     }
 
-                    let cardBorder = 'border-slate-800'; let cardBg = 'bg-slate-900';
-                    if (isRivalry) { cardBorder = 'border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.15)] rivalry-glow'; cardBg = 'bg-gradient-to-br from-slate-900 to-red-950/40'; } 
-                    else if (isPlayoff) { cardBorder = 'border-amber-500/40 shadow-[0_0_15px_rgba(245,158,11,0.05)]'; cardBg = 'bg-slate-900/90'; }
+                    // Card styling based on Rivalry/Playoffs
+                    let cardBorder = 'border-slate-800';
+                    let cardBg = 'bg-slate-900';
+                    if (isRivalry) {
+                        cardBorder = 'border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.15)] rivalry-glow';
+                        cardBg = 'bg-gradient-to-br from-slate-900 to-red-950/40';
+                    } else if (isPlayoff) {
+                        cardBorder = 'border-amber-500/40 shadow-[0_0_15px_rgba(245,158,11,0.05)]';
+                        cardBg = 'bg-slate-900/90';
+                    }
 
                     content += `
                         <div class="rounded-2xl p-4 border ${cardBorder} ${cardBg} relative overflow-hidden">
